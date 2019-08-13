@@ -25,7 +25,6 @@ outputFileName = sys.argv[6]
 
 # Parameters
 tcHalfWindow = 50
-maxReadPile = 200
 
 ###########################################################
 # Functions / Classes
@@ -51,9 +50,7 @@ def tag_count(chrName, start, end, bamFile, tcHalfWindow):
   mid = (start+end)/2
   p1exttc = max(mid - tcHalfWindow,0)
   p2exttc = mid + tcHalfWindow
-  for read in bamFile.fetch(reference=chrName, start=p1exttc, end=p2exttc):
-    total += 1
-    if(total >= maxReadPile): break
+  for read in bamFile.fetch(reference=chrName, start=p1exttc, end=p2exttc): total += 1
   return total
 
 # Function to calculate overlap
@@ -62,7 +59,9 @@ def overlap(t1, t2):
 
 # Function to write output
 def writeOutput(ll,regionTagCount,resVec,outFile):
-  outFile.write("\t".join([ll[0],ll[1],ll[2],str(regionTagCount)]+[str(e) for e in resVec])+"\n")
+  outFile.write("\t".join([ll[0],ll[1],ll[2],str(regionTagCount)]))
+  for vec in resVec: outFile.write("\t"+"\t".join([str(e) for e in vec]))
+  outFile.write("\n")
 
 ###########################################################
 # Execution
@@ -90,11 +89,11 @@ for line in bedFile:
 
   # Starting result structures
   regionTagCount = 0
-  resVec = [globalMin,0,0,0,0,0] # BIT-SCORE, MOTIF_P1, MOTIF_P2, FP_OVERLAP, FP_P1, FP_P2
+  resVec = [[globalMin,0,0] for e in motifList]
   counter = 0
 
   # Evaluating Overall TC
-  try: regionTagCount = tag_count(chrName, p1, p2, dnaseBam, tcHalfWindow)
+  try: regionTagCount = tag_count(chrName, p1, p2, dnaseBam, tcHalfWindow) #
   except Exception: 
     print "Exception TC raised in "+line
     writeOutput(ll,regionTagCount,resVec,outFile)
@@ -114,43 +113,41 @@ for line in bedFile:
     writeOutput(ll,regionTagCount,resVec,outFile)
     continue
 
-  # Best mpbs
-  maxPos = -99999
-  maxValue = globalMin
-  maxMotifLen = -1
-
   # Performing motif matching and footprint overlapping
   for res in search(sequence, [e.pssm_list for e in motifList], [e.min for e in motifList], absolute_threshold=True, both_strands=True):
 
+    maxValueOverlap = globalMin
+    maxValueNoOverlap = globalMin
+
     for (position, score) in res:
 
-      if(score > maxValue):
-        maxValue = score
-        maxPos = position
-        maxMotifLen = motifList[counter].len
+      for f in footprints:
+        # t1 = MPBS
+        if(position >= 0): t1 = [p1+position,p1+position+motifList[counter].len]
+        else: t1 = [p1-position,p1-position+motifList[counter].len]
+        # t2 = footprint
+        t2 = [f.pos,f.aend]
+        overlapN = overlap(t1, t2)
+        if((overlapN > 0) and (score > maxValueOverlap)):
+          maxValueOverlap = score
+          maxValueOverlapTC = tag_count(chrName, position, position+motifList[counter].len, dnaseBam, tcHalfWindow)
+            
+      if(score > maxValueNoOverlap): maxValueNoOverlap = score
+
+    if((maxValueOverlap > 0) and (overlapN >= motifList[counter].len/2)):
+      resVec[counter][0] = maxValueOverlap # MPBS max score
+      resVec[counter][1] = overlapN # MPBS+FP overlap
+      resVec[counter][2] = maxValueOverlapTC # overlapping FP TC
+    else:
+      resVec[counter][0] = maxValueNoOverlap # MPBS max score
+      resVec[counter][1] = 0 # MPBS+FP overlap
+      resVec[counter][2] = 0 # overlapping FP TC
 
     counter += 1
     if(counter == len(resVec)): break
 
-  # Overlap and Writting output
-  if(maxValue != globalMin):
-    # t1 = MPBS
-    t1 = [0,0]
-    t2Write = [0,0]
-    if(maxPos >= 0): t1 = [p1+maxPos, p1+maxPos+maxMotifLen]
-    else: t1 = [p1-maxPos, p1-maxPos+maxMotifLen]
-    maxOverlap = 0
-    for f in footprints:
-      # t2 = footprint
-      t2 = [f.pos,f.aend]
-      overlapN = overlap(t1, t2)
-      if(overlapN > maxOverlap):
-        maxOverlap = overlapN
-        t2Write[0] = t2[0]
-        t2Write[1] = t2[1]
-    resVec = [maxValue, t1[0], t1[1], maxOverlap, t2Write[0], t2Write[1]]
-    writeOutput(ll,regionTagCount,resVec,outFile)
-  else: writeOutput(ll,regionTagCount,resVec,outFile)
+  # Writing output
+  writeOutput(ll,regionTagCount,resVec,outFile)
 
 # Termination
 bedFile.close()
